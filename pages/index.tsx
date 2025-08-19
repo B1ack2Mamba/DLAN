@@ -81,12 +81,12 @@ export default function HomeUI() {
     // -------- загрузка vip.json --------
     const reloadVip = useCallback(async () => {
         try {
-            const res = await fetch("/vip.json", { cache: "no-store" });
-            if (!res.ok) throw new Error("vip.json not found");
+            // относительный путь работает и на Vercel, и на IPFS (внутри CID)
+            const res = await fetch('vip.json?' + Date.now()); // без начального слэша
+            if (!res.ok) throw new Error('vip.json missing');
             const data: VipConfig = await res.json();
             setVip(data);
         } catch {
-            // дефолт
             setVip({
                 invest_usd_per_dlan_rule: { dlan_per_usd_per_day: 120 },
                 invest_fee_recipient: ADMIN_SOL_WALLET.toBase58(),
