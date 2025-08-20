@@ -1,0 +1,132 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo};
+
+declare_id!("94WKymE3fcSxxQtgHa7z75HwhYoN5fCk53Ls8MKvqhmc");
+
+/// 1 SOL = 1000 DLAN => rate_numerator = 1000, denominator = 1e9 lamports
+const RATE_PER_SOL: u64 = 1000;              // DLAN за 1 SOL
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000; // константа Solana
+
+// Казначейский кошелек, куда улетает SOL
+const TREASURY_PUBKEY: &str = "F37yZcrqkne6EMM9hhTRgr7SWULk1MMPnbJ7mhrq4YFP";
+
+#[program]
+pub mod dlan_stake {
+    use super::*;
+
+    pub fn stake(ctx: Context<Stake>, amount_lamports: u64) -> Result<()> {
+        // 1. Переводим SOL на казначейский кошелек
+        let treasury = Pubkey::from_str(TREASURY_PUBKEY).unwrap();
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.payer.key(),
+            &treasury,
+            amount_lamports,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // 2. Считаем сколько DLAN выдать
+        // amount_lamports * 1000 / 1e9
+        let dlan_amount = amount_lamports
+            .checked_mul(RATE_PER_SOL)
+            .unwrap()
+            / LAMPORTS_PER_SOL;
+
+        require!(dlan_amount > 0, StakeError::TooSmallAmount);
+
+        // 3. Минтим DLAN пользователю
+        let seeds: &[&[u8]] = &[b"mint_auth", &[ctx.accounts.config.bump]];
+        let signer = &[&seeds[..]];
+
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.dlan_mint.to_account_info(),
+                    to: ctx.accounts.user_dlan_ata.to_account_info(),
+                    authority: ctx.accounts.mint_auth.to_account_info(),
+                },
+                signer,
+            ),
+            dlan_amount,
+        )?;
+
+        Ok(())
+    }
+
+    // Одноразовая инициализация конфигурации (PDA + хранит bump)
+    pub fn init_config(ctx: Context<InitConfig>) -> Result<()> {
+        ctx.accounts.config.bump = *ctx.bumps.get("mint_auth").unwrap();
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct InitConfig<'info> {
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 8, // только bump
+        seeds = [b"config"],
+        bump
+    )]
+    pub config: Account<'info, Config>,
+
+    /// CHECK: PDA, будет авторитетом минта
+    #[account(
+        seeds = [b"mint_auth"],
+        bump
+    )]
+    pub mint_auth: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[account]
+pub struct Config {
+    pub bump: u8,
+}
+
+#[derive(Accounts)]
+pub struct Stake<'info> {
+    /// Хранит bump для seed mint_auth
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, Config>,
+
+    /// CHECK: PDA, авторитет минта
+    #[account(
+        seeds = [b"mint_auth"],
+        bump = config.bump,
+    )]
+    pub mint_auth: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// МИНТ DLAN (существующий SPL mint)
+    #[account(mut)]
+    pub dlan_mint: Account<'info, Mint>,
+
+    /// ATA пользователя для DLAN
+    #[account(mut)]
+    pub user_dlan_ata: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[error_code]
+pub enum StakeError {
+    #[msg("Too small SOL amount for minting any DLAN.")]
+    TooSmallAmount,
+}

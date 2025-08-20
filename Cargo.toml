@@ -1,0 +1,7 @@
+[workspace]
+members = ["programs/dlan_stake"]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+
